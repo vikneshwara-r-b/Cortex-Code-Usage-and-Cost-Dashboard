@@ -42,26 +42,6 @@ That's it. No other account-specific changes are needed. All queries target `SNO
 
 ---
 
-## Pricing
-
-Cortex Code (CLI and Snowsight) moved to **AI credits billing on April 1, 2026**.
-
-- **1 AI credit ≈ $2.00 USD**
-- Credits are deducted from your AI Services budget
-
-### Model rates (credits per million tokens)
-
-| Model | Input | Output | Cache write | Cache read |
-|---|---|---|---|---|
-| claude-4-sonnet | 1.50 | 7.50 | 1.88 | 0.15 |
-| claude-sonnet-4-5 | 1.65 | 8.25 | 2.06 | 0.17 |
-| claude-sonnet-4-6 | 1.65 | 8.25 | 2.07 | 0.17 |
-| claude-opus-4-5 | 2.75 | 13.75 | 3.44 | 0.28 |
-| claude-opus-4-6 | 2.75 | 13.75 | 3.44 | 0.28 |
-| openai-gpt-5.2 | 0.97 | 7.70 | — | 0.10 |
-
----
-
 ## Data sources
 
 All data is read from `SNOWFLAKE.ACCOUNT_USAGE` — requires `ACCOUNTADMIN` or `MONITOR USAGE` privilege.
