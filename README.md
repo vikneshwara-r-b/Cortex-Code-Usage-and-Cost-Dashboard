@@ -238,7 +238,8 @@ streamlit run cortex_code_cost_dashboard.py
 
 | Control | Description |
 |---|---|
-| **Time range** | Last 12h / 24h / 7d / 30d / 90d |
+| **Time range** | Last 12h / 24h / 7d / 30d / 90d / Custom range |
+| **Custom range** | Start and end datetime pickers (1-minute granularity). Minimum span: 1 day. Ranges ≤ 2 days show hourly granularity; longer ranges show daily |
 | **Demo mode** | Toggle synthetic data on/off (auto-enabled when no real data found) |
 | **Surface filter** | All / CLI only / Snowsight only |
 | **Daily credit threshold** | Alert threshold for the Cost Controls tab |
