@@ -27,7 +27,7 @@ Pricing: Cortex Code moved to AI credits billing on Apr 1, 2026.
   1 AI credit ≈ $2.00 USD.
 """
 
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 import random
 
 import altair as alt
@@ -102,6 +102,7 @@ TIME_RANGE_OPTIONS = {
     "Last 7 days":   "DATEADD('day',  -7,  CURRENT_TIMESTAMP())",
     "Last 30 days":  "DATEADD('day',  -30, CURRENT_DATE())",
     "Last 90 days":  "DATEADD('day',  -90, CURRENT_DATE())",
+    "Custom range":  None,
 }
 
 
@@ -151,20 +152,25 @@ def run_query(sql: str) -> pd.DataFrame:
 # SQL helpers
 # =============================================================================
 
-def _source_cte(source_filter: str, time_filter: str) -> str:
+def _source_cte(source_filter: str, time_filter: str, time_filter_end: str | None = None) -> str:
     """
     Returns a CTE fragment named cortex_code_usage, filtered by surface and time.
     Usage: WITH {_source_cte(...)} SELECT ... FROM cortex_code_usage
     """
+    if time_filter_end:
+        time_clause = f"USAGE_TIME >= {time_filter} AND USAGE_TIME <= {time_filter_end}"
+    else:
+        time_clause = f"USAGE_TIME >= {time_filter}"
+
     cli_block = f"""
         SELECT *, '{SRC_CLI}' AS SOURCE
         FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_CODE_CLI_USAGE_HISTORY
-        WHERE USAGE_TIME >= {time_filter}"""
+        WHERE {time_clause}"""
 
     ui_block = f"""
         SELECT *, '{SRC_UI}' AS SOURCE
         FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_CODE_SNOWSIGHT_USAGE_HISTORY
-        WHERE USAGE_TIME >= {time_filter}"""
+        WHERE {time_clause}"""
 
     if source_filter == SRC_CLI:
         body = cli_block
@@ -176,10 +182,18 @@ def _source_cte(source_filter: str, time_filter: str) -> str:
     return f"cortex_code_usage AS ({body}\n    )"
 
 
-def _trend_granularity(time_filter: str) -> tuple[str, str]:
+def _trend_granularity(time_filter: str, time_filter_end: str | None = None) -> tuple[str, str]:
     """Return (DATE_TRUNC level, tooltip format) appropriate for the window."""
     if "'hour'" in time_filter:
         return "hour", "%Y-%m-%d %H:%M"
+    if time_filter_end:
+        try:
+            s = datetime.strptime(time_filter.split("'")[1], "%Y-%m-%d %H:%M:%S")
+            e = datetime.strptime(time_filter_end.split("'")[1], "%Y-%m-%d %H:%M:%S")
+            if (e - s).days <= 2:
+                return "hour", "%Y-%m-%d %H:%M"
+        except Exception:
+            pass
     return "day", "%Y-%m-%d"
 
 
@@ -441,8 +455,8 @@ def demo_rolling_24h_spend() -> pd.DataFrame:
 # =============================================================================
 
 @st.cache_data(ttl=900, show_spinner="Loading executive summary...")
-def load_executive_summary(source_filter: str, time_filter: str) -> pd.DataFrame:
-    cte = _source_cte(source_filter, time_filter)
+def load_executive_summary(source_filter: str, time_filter: str, time_filter_end: str | None = None) -> pd.DataFrame:
+    cte = _source_cte(source_filter, time_filter, time_filter_end)
     return run_query(f"""
         WITH {cte},
         mtd AS (
@@ -486,8 +500,8 @@ def load_executive_summary(source_filter: str, time_filter: str) -> pd.DataFrame
 
 
 @st.cache_data(ttl=900, show_spinner="Loading spend trend...")
-def load_daily_spend_trend(source_filter: str, time_filter: str) -> pd.DataFrame:
-    cte = _source_cte(source_filter, time_filter)
+def load_daily_spend_trend(source_filter: str, time_filter: str, time_filter_end: str | None = None) -> pd.DataFrame:
+    cte = _source_cte(source_filter, time_filter, time_filter_end)
     return run_query(f"""
         WITH {cte}
         SELECT
@@ -504,8 +518,8 @@ def load_daily_spend_trend(source_filter: str, time_filter: str) -> pd.DataFrame
 
 
 @st.cache_data(ttl=900, show_spinner="Loading user breakdown...")
-def load_user_breakdown(source_filter: str, time_filter: str) -> pd.DataFrame:
-    cte = _source_cte(source_filter, time_filter)
+def load_user_breakdown(source_filter: str, time_filter: str, time_filter_end: str | None = None) -> pd.DataFrame:
+    cte = _source_cte(source_filter, time_filter, time_filter_end)
     return run_query(f"""
         WITH {cte}
         SELECT
@@ -525,8 +539,8 @@ def load_user_breakdown(source_filter: str, time_filter: str) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=900, show_spinner="Loading model distribution...")
-def load_model_distribution(source_filter: str, time_filter: str) -> pd.DataFrame:
-    cte = _source_cte(source_filter, time_filter)
+def load_model_distribution(source_filter: str, time_filter: str, time_filter_end: str | None = None) -> pd.DataFrame:
+    cte = _source_cte(source_filter, time_filter, time_filter_end)
     return run_query(f"""
         WITH {cte},
         flattened AS (
@@ -552,12 +566,12 @@ def load_model_distribution(source_filter: str, time_filter: str) -> pd.DataFram
 
 
 @st.cache_data(ttl=900, show_spinner="Loading model cost breakdown...")
-def load_model_cost_breakdown(source_filter: str, time_filter: str) -> pd.DataFrame:
+def load_model_cost_breakdown(source_filter: str, time_filter: str, time_filter_end: str | None = None) -> pd.DataFrame:
     """
     Per-model credit breakdown using authoritative per-token-type rates.
     Pattern from cost-queries.sql (C4) — uses TOKENS_GRANULAR for accurate attribution.
     """
-    cte = _source_cte(source_filter, time_filter)
+    cte = _source_cte(source_filter, time_filter, time_filter_end)
     return run_query(f"""
         WITH {cte},
         coco_model_costs AS ({COCO_MODEL_COSTS_SQL}),
@@ -604,8 +618,8 @@ def load_model_cost_breakdown(source_filter: str, time_filter: str) -> pd.DataFr
 
 
 @st.cache_data(ttl=900, show_spinner="Loading cache efficiency...")
-def load_cache_efficiency(source_filter: str, time_filter: str) -> pd.DataFrame:
-    cte = _source_cte(source_filter, time_filter)
+def load_cache_efficiency(source_filter: str, time_filter: str, time_filter_end: str | None = None) -> pd.DataFrame:
+    cte = _source_cte(source_filter, time_filter, time_filter_end)
     return run_query(f"""
         WITH {cte},
         user_agg AS (
@@ -639,8 +653,8 @@ def load_cache_efficiency(source_filter: str, time_filter: str) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=900, show_spinner="Loading output ratios...")
-def load_output_ratio(source_filter: str, time_filter: str) -> pd.DataFrame:
-    cte = _source_cte(source_filter, time_filter)
+def load_output_ratio(source_filter: str, time_filter: str, time_filter_end: str | None = None) -> pd.DataFrame:
+    cte = _source_cte(source_filter, time_filter, time_filter_end)
     return run_query(f"""
         WITH {cte},
         user_agg AS (
@@ -673,9 +687,9 @@ def load_output_ratio(source_filter: str, time_filter: str) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=900, show_spinner="Loading trends...")
-def load_daily_trends(source_filter: str, time_filter: str) -> pd.DataFrame:
-    trunc, _ = _trend_granularity(time_filter)
-    cte = _source_cte(source_filter, time_filter)
+def load_daily_trends(source_filter: str, time_filter: str, time_filter_end: str | None = None) -> pd.DataFrame:
+    trunc, _ = _trend_granularity(time_filter, time_filter_end)
+    cte = _source_cte(source_filter, time_filter, time_filter_end)
     return run_query(f"""
         WITH {cte},
         bucketed AS (
@@ -702,17 +716,18 @@ def load_daily_trends(source_filter: str, time_filter: str) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=900, show_spinner="Loading AI services breakdown...")
-def load_ai_services_breakdown(time_filter: str) -> pd.DataFrame:
+def load_ai_services_breakdown(time_filter: str, time_filter_end: str | None = None) -> pd.DataFrame:
+    end_clause = f" AND USAGE_TIME <= {time_filter_end}" if time_filter_end else ""
     return run_query(f"""
         SELECT 'Cortex Code CLI' AS SERVICE,
                ROUND(SUM(TOKEN_CREDITS), 2) AS MTD_CREDITS
         FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_CODE_CLI_USAGE_HISTORY
-        WHERE USAGE_TIME >= {time_filter}
+        WHERE USAGE_TIME >= {time_filter}{end_clause}
         UNION ALL
         SELECT 'Cortex Code Snowsight',
                ROUND(SUM(TOKEN_CREDITS), 2)
         FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_CODE_SNOWSIGHT_USAGE_HISTORY
-        WHERE USAGE_TIME >= {time_filter}
+        WHERE USAGE_TIME >= {time_filter}{end_clause}
         UNION ALL
         SELECT 'Total AI Services (billing)', ROUND(SUM(CREDITS_USED), 2)
         FROM SNOWFLAKE.ACCOUNT_USAGE.METERING_DAILY_HISTORY
@@ -722,7 +737,8 @@ def load_ai_services_breakdown(time_filter: str) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=900, show_spinner="Loading surface breakdown...")
-def load_surface_breakdown(time_filter: str) -> pd.DataFrame:
+def load_surface_breakdown(time_filter: str, time_filter_end: str | None = None) -> pd.DataFrame:
+    end_clause = f" AND USAGE_TIME <= {time_filter_end}" if time_filter_end else ""
     return run_query(f"""
         SELECT
             '{SRC_CLI}' AS SOURCE,
@@ -730,7 +746,7 @@ def load_surface_breakdown(time_filter: str) -> pd.DataFrame:
             COUNT(*) AS TOTAL_QUERIES,
             ROUND(SUM(TOKEN_CREDITS), 4) AS TOTAL_CREDITS
         FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_CODE_CLI_USAGE_HISTORY
-        WHERE USAGE_TIME >= {time_filter}
+        WHERE USAGE_TIME >= {time_filter}{end_clause}
         UNION ALL
         SELECT
             '{SRC_UI}' AS SOURCE,
@@ -738,13 +754,13 @@ def load_surface_breakdown(time_filter: str) -> pd.DataFrame:
             COUNT(*) AS TOTAL_QUERIES,
             ROUND(SUM(TOKEN_CREDITS), 4) AS TOTAL_CREDITS
         FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_CODE_SNOWSIGHT_USAGE_HISTORY
-        WHERE USAGE_TIME >= {time_filter}
+        WHERE USAGE_TIME >= {time_filter}{end_clause}
     """)
 
 
 @st.cache_data(ttl=900, show_spinner="Loading user-model heatmap...")
-def load_user_model_heatmap(source_filter: str, time_filter: str) -> pd.DataFrame:
-    cte = _source_cte(source_filter, time_filter)
+def load_user_model_heatmap(source_filter: str, time_filter: str, time_filter_end: str | None = None) -> pd.DataFrame:
+    cte = _source_cte(source_filter, time_filter, time_filter_end)
     return run_query(f"""
         WITH {cte},
         flattened AS (
@@ -769,8 +785,8 @@ def load_user_model_heatmap(source_filter: str, time_filter: str) -> pd.DataFram
 
 
 @st.cache_data(ttl=900, show_spinner="Loading new user onboarding...")
-def load_new_user_onboarding(source_filter: str, time_filter: str) -> pd.DataFrame:
-    cte = _source_cte(source_filter, time_filter)
+def load_new_user_onboarding(source_filter: str, time_filter: str, time_filter_end: str | None = None) -> pd.DataFrame:
+    cte = _source_cte(source_filter, time_filter, time_filter_end)
     return run_query(f"""
         WITH {cte},
         first_use AS (
@@ -820,15 +836,16 @@ def load_rolling_24h_spend() -> pd.DataFrame:
 # Data availability check
 # =============================================================================
 
-def _has_real_data(time_filter: str) -> bool:
+def _has_real_data(time_filter: str, time_filter_end: str | None = None) -> bool:
     try:
+        end_clause = f" AND USAGE_TIME <= {time_filter_end}" if time_filter_end else ""
         df = run_query(f"""
             SELECT COUNT(*) AS CNT FROM (
                 SELECT REQUEST_ID FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_CODE_CLI_USAGE_HISTORY
-                WHERE USAGE_TIME >= {time_filter}
+                WHERE USAGE_TIME >= {time_filter}{end_clause}
                 UNION ALL
                 SELECT REQUEST_ID FROM SNOWFLAKE.ACCOUNT_USAGE.CORTEX_CODE_SNOWSIGHT_USAGE_HISTORY
-                WHERE USAGE_TIME >= {time_filter}
+                WHERE USAGE_TIME >= {time_filter}{end_clause}
             )
         """)
         return int(df.iloc[0]["cnt"]) > 0
@@ -873,12 +890,37 @@ with st.sidebar:
         list(TIME_RANGE_OPTIONS.keys()),
         index=0,  # default: Last 12 hours
     )
-    TIME_FILTER = TIME_RANGE_OPTIONS[time_range_label]
+
+    if time_range_label == "Custom range":
+        _now = datetime.now()
+        d_col1, d_col2 = st.columns(2)
+        with d_col1:
+            start_dt = st.datetime_input(
+                "Start",
+                value=datetime.combine(date.today() - timedelta(days=1), time(0, 0)),
+                max_value=_now,
+                step=timedelta(minutes=1),
+            )
+        with d_col2:
+            end_dt = st.datetime_input(
+                "End",
+                value=min(datetime.combine(date.today(), time(23, 59)), _now),
+                max_value=_now,
+                step=timedelta(minutes=1),
+            )
+        if end_dt - start_dt < timedelta(days=1):
+            st.error("Custom range must span at least 1 day.")
+            st.stop()
+        TIME_FILTER = f"'{start_dt.strftime('%Y-%m-%d %H:%M:%S')}'::TIMESTAMP_NTZ"
+        TIME_FILTER_END = f"'{end_dt.strftime('%Y-%m-%d %H:%M:%S')}'::TIMESTAMP_NTZ"
+    else:
+        TIME_FILTER = TIME_RANGE_OPTIONS[time_range_label]
+        TIME_FILTER_END = None
 
     st.markdown("---")
 
     st.markdown("### Data source")
-    has_data = _has_real_data(TIME_FILTER)
+    has_data = _has_real_data(TIME_FILTER, TIME_FILTER_END)
     if has_data:
         use_demo = st.toggle("Show demo data", value=False)
         if use_demo:
@@ -927,12 +969,17 @@ with st.sidebar:
         ),
     )
 
+    if time_range_label == "Custom range":
+        window_text = f"Custom: {start_dt.strftime('%Y-%m-%d %H:%M')} → {end_dt.strftime('%Y-%m-%d %H:%M')}"
+    else:
+        window_text = time_range_label
+
     st.markdown("---")
     st.caption(
         "Sources: `SNOWFLAKE.ACCOUNT_USAGE`\n\n"
         "`CORTEX_CODE_CLI_USAGE_HISTORY`\n"
         "`CORTEX_CODE_SNOWSIGHT_USAGE_HISTORY`\n\n"
-        f"Window: {time_range_label}\n\n"
+        f"Window: {window_text}\n\n"
         "Latency: 45 min – 2 hr\n\n"
         "Pricing live Apr 1 2026  ·  1 credit ≈ $2 USD"
     )
@@ -986,7 +1033,7 @@ tab_overview, tab_users, tab_models, tab_efficiency, tab_controls, tab_trends = 
 with tab_overview:
     summary = get_data(
         load_executive_summary, demo_executive_summary, use_demo,
-        surface_filter, TIME_FILTER,
+        surface_filter, TIME_FILTER, TIME_FILTER_END,
     )
 
     if summary.empty or summary.iloc[0]["mtd_credits"] is None:
@@ -1030,7 +1077,7 @@ with tab_overview:
 
     # CLI vs Snowsight split
     st.subheader(f"CLI vs Snowsight — {time_range_label}")
-    surface_df = get_data(load_surface_breakdown, demo_surface_breakdown, use_demo, TIME_FILTER)
+    surface_df = get_data(load_surface_breakdown, demo_surface_breakdown, use_demo, TIME_FILTER, TIME_FILTER_END)
     if not surface_df.empty:
         scol1, scol2, scol3 = st.columns(3)
         for _, r in surface_df.iterrows():
@@ -1069,7 +1116,7 @@ with tab_overview:
     # Spend trend
     st.subheader(f"Daily spend trend — {time_range_label}")
     daily = get_data(
-        load_daily_spend_trend, demo_daily_spend_trend, use_demo, surface_filter, TIME_FILTER,
+        load_daily_spend_trend, demo_daily_spend_trend, use_demo, surface_filter, TIME_FILTER, TIME_FILTER_END,
     )
     if not daily.empty:
         daily["usage_date"] = pd.to_datetime(daily["usage_date"])
@@ -1121,7 +1168,7 @@ with tab_overview:
     # AI services billing context
     st.subheader("AI Services billing context")
     st.caption("Cortex Code credits vs. total AI Services consumption for today.")
-    breakdown = get_data(load_ai_services_breakdown, demo_ai_services_breakdown, use_demo, TIME_FILTER)
+    breakdown = get_data(load_ai_services_breakdown, demo_ai_services_breakdown, use_demo, TIME_FILTER, TIME_FILTER_END)
     if not breakdown.empty:
         svc_cols = st.columns(len(breakdown))
         for i, (_, r) in enumerate(breakdown.iterrows()):
@@ -1141,7 +1188,7 @@ with tab_overview:
 with tab_users:
     st.subheader(f"Per-user breakdown — {time_range_label}")
     users_df = get_data(
-        load_user_breakdown, demo_user_breakdown, use_demo, surface_filter, TIME_FILTER,
+        load_user_breakdown, demo_user_breakdown, use_demo, surface_filter, TIME_FILTER, TIME_FILTER_END,
     )
 
     if not users_df.empty:
@@ -1207,7 +1254,7 @@ with tab_users:
 
     st.subheader(f"User × model heatmap — {time_range_label}")
     heatmap_df = get_data(
-        load_user_model_heatmap, demo_user_model_heatmap, use_demo, surface_filter, TIME_FILTER,
+        load_user_model_heatmap, demo_user_model_heatmap, use_demo, surface_filter, TIME_FILTER, TIME_FILTER_END,
     )
     if not heatmap_df.empty:
         n_users = heatmap_df["user_name"].nunique()
@@ -1239,7 +1286,7 @@ with tab_models:
     # Token distribution
     st.subheader(f"Model token distribution — {time_range_label}")
     models_df = get_data(
-        load_model_distribution, demo_model_distribution, use_demo, surface_filter, TIME_FILTER,
+        load_model_distribution, demo_model_distribution, use_demo, surface_filter, TIME_FILTER, TIME_FILTER_END,
     )
 
     if not models_df.empty:
@@ -1292,7 +1339,7 @@ with tab_models:
     )
 
     cost_df = get_data(
-        load_model_cost_breakdown, demo_model_cost_breakdown, use_demo, surface_filter, TIME_FILTER,
+        load_model_cost_breakdown, demo_model_cost_breakdown, use_demo, surface_filter, TIME_FILTER, TIME_FILTER_END,
     )
     if not cost_df.empty:
         # Stacked bar: credit composition per model
@@ -1375,7 +1422,7 @@ with tab_efficiency:
     with col1:
         st.subheader(f"Cache efficiency — {time_range_label}")
         cache_df = get_data(
-            load_cache_efficiency, demo_cache_efficiency, use_demo, surface_filter, TIME_FILTER,
+            load_cache_efficiency, demo_cache_efficiency, use_demo, surface_filter, TIME_FILTER, TIME_FILTER_END,
         )
         if not cache_df.empty:
             chart = (
@@ -1413,7 +1460,7 @@ with tab_efficiency:
     with col2:
         st.subheader(f"Output / input ratio — {time_range_label}")
         ratio_df = get_data(
-            load_output_ratio, demo_output_ratio, use_demo, surface_filter, TIME_FILTER,
+            load_output_ratio, demo_output_ratio, use_demo, surface_filter, TIME_FILTER, TIME_FILTER_END,
         )
         if not ratio_df.empty:
             chart = (
@@ -1629,13 +1676,13 @@ with tab_controls:
 # TAB 6 — Trends
 # -----------------------------------------------------------------------------
 with tab_trends:
-    trunc_level, time_fmt_str = _trend_granularity(TIME_FILTER)
+    trunc_level, time_fmt_str = _trend_granularity(TIME_FILTER, TIME_FILTER_END)
     bucket_label = "Hourly" if trunc_level == "hour" else "Daily"
 
     st.subheader(f"{bucket_label} trends — {time_range_label}")
 
     trends_df = get_data(
-        load_daily_trends, demo_daily_trends, use_demo, surface_filter, TIME_FILTER,
+        load_daily_trends, demo_daily_trends, use_demo, surface_filter, TIME_FILTER, TIME_FILTER_END,
     )
 
     if not trends_df.empty:
@@ -1687,7 +1734,7 @@ with tab_trends:
 
     st.subheader(f"New user onboarding — {time_range_label}")
     onboard_df = get_data(
-        load_new_user_onboarding, demo_new_user_onboarding, use_demo, surface_filter, TIME_FILTER,
+        load_new_user_onboarding, demo_new_user_onboarding, use_demo, surface_filter, TIME_FILTER, TIME_FILTER_END,
     )
     if not onboard_df.empty:
         onboard_df["first_use_date"] = pd.to_datetime(onboard_df["first_use_date"])

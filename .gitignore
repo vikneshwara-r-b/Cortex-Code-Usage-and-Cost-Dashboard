@@ -1,5 +1,6 @@
 .streamlit
 output/**
 .env
-# Cortex Code generates plans in "plans" directory
-plans
+# Cortex Code generates plan mode artifacts in "plans" directory
+plans/**
+__pycache__/**
