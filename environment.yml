@@ -1,0 +1,8 @@
+name: sf_env
+channels:
+  - snowflake
+dependencies:
+  - streamlit=1.52.2
+  - altair
+  - pandas
+  - numpy

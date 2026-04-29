@@ -1,15 +1,19 @@
 definition_version: 2
+env:
+  database: ""
+  schema: ""
+  warehouse: ""
 entities:
   cortex_code_usage_dashboard:
     type: streamlit
     title: "Cortex Code Usage and Cost Dashboard"
     identifier:
       name: CORTEX_CODE_USAGE_AND_COST_DASHBOARD
-      database: "<YOUR_DATABASE>"
-      schema: "<YOUR_SCHEMA>"
-    query_warehouse: "<YOUR_WAREHOUSE>"
+      database: "<% ctx.env.database %>"
+      schema: "<% ctx.env.schema %>"
+    query_warehouse: "<% ctx.env.warehouse %>"
     main_file: cortex_code_cost_dashboard.py
     artifacts:
       - cortex_code_cost_dashboard.py
-      - pyproject.toml
+      - environment.yml
       - .streamlit/config.toml

@@ -109,21 +109,34 @@ TIME_RANGE_OPTIONS = {
 # Snowflake connection
 # =============================================================================
 
-def get_connection():
-    # Inside Snowflake (Streamlit in Snowflake), the built-in connection is
-    # always named "snowflake". Locally it falls back to "snowhouse".
-    for name in ("snowflake", "snowhouse"):
+def _get_session():
+    """Return a Snowpark Session (SiS) or Streamlit connection (local dev)."""
+    # 1. Streamlit-in-Snowflake warehouse runtime
+    try:
+        from snowflake.snowpark.context import get_active_session
+        return get_active_session()
+    except Exception:
+        pass
+    # 2. Local development — needs [connections.snowhouse] in .streamlit/secrets.toml
+    for name in ("snowhouse", "snowflake"):
         try:
-            return st.connection(name)
+            return st.connection(name, type="sql")
         except Exception:
             pass
     st.error("Could not connect to Snowflake. Configure a connection named 'snowhouse' in `.streamlit/secrets.toml`.")
     st.stop()
 
 
+_session = _get_session()
+
+
 def run_query(sql: str) -> pd.DataFrame:
-    conn = get_connection()
-    df = conn.query(sql)
+    if hasattr(_session, 'sql'):
+        # Snowpark Session (SiS warehouse runtime)
+        df = _session.sql(sql).to_pandas()
+    else:
+        # Streamlit SnowflakeConnection (local dev)
+        df = _session.query(sql)
     df.columns = df.columns.str.lower()
     # Snowflake returns NUMBER/DECIMAL columns as decimal.Decimal objects.
     # Coerce object-typed columns that contain numerics to float so that
@@ -852,8 +865,6 @@ def _threshold_rule(x_val: float, color: str = CHART_RED) -> alt.Chart:
 # =============================================================================
 # Sidebar
 # =============================================================================
-
-get_connection()
 
 with st.sidebar:
     st.markdown("### Time range")

@@ -1,0 +1,5 @@
+.streamlit
+output/**
+.env
+# Cortex Code generates plans in "plans" directory
+plans

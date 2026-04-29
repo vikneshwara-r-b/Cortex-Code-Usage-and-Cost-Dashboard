@@ -21,18 +21,19 @@ Supports **synthetic demo data** when no real Cortex Code usage is available in 
 
 ## Before you start
 
-### 1. Edit `snowflake.yml`
+### 1. Create a `.env` file
 
-Open `snowflake.yml` and replace the three placeholder values with your own:
+The deployment target (database, schema, warehouse) is configured via environment variables, not hardcoded in `snowflake.yml`. Create a `.env` file in the project root:
 
-```yaml
-identifier:
-  database: "<YOUR_DATABASE>"   # e.g. MY_DB
-  schema: "<YOUR_SCHEMA>"       # e.g. PUBLIC
-query_warehouse: "<YOUR_WAREHOUSE>"  # e.g. COMPUTE_WH
+```
+database=MY_DB
+schema=PUBLIC
+warehouse=COMPUTE_WH
 ```
 
-Any existing database and schema in your account will work. The warehouse just needs to be able to run queries.
+Replace the values with your own. Any existing database and schema will work. The warehouse just needs to be able to run queries.
+
+> `.env` is git-ignored so it won't be committed. Each developer sets their own.
 
 ### 2. Required privilege
 
@@ -62,29 +63,88 @@ All data is read from `SNOWFLAKE.ACCOUNT_USAGE` — requires `ACCOUNTADMIN` or `
 cortex-code-cost-dashboard/
 ├── cortex_code_cost_dashboard.py   # Streamlit app (main file)
 ├── cost-queries.sql                # Reference SQL queries for manual analysis
-├── snowflake.yml                   # Snowflake CLI deployment config
-├── pyproject.toml                  # Python dependencies
+├── snowflake.yml                   # Snowflake CLI deployment config (templated)
+├── environment.yml                 # Conda dependencies for SiS warehouse runtime
+├── .env                            # Deploy target config (git-ignored, create your own)
+├── pyproject.toml                  # Python dependencies (local dev only)
 ├── .streamlit/
-│   └── config.toml                 # Dark theme configuration
+│   └── config.toml                 # Light theme configuration
 └── README.md
 ```
 
 ---
 
-## Option 1 — Deploy with Snowflake CLI (recommended)
+## Option 1 — Deploy to Streamlit-in-Snowflake with Snowflake CLI (recommended)
+
+This deploys the app as a **Streamlit-in-Snowflake (SiS)** app running on a warehouse runtime.
 
 ### Prerequisites
 
-- [Snowflake CLI](https://docs.snowflake.com/en/developer-guide/snowflake-cli/index) installed
-- A configured Snowflake connection
+- [Snowflake CLI (`snow`)](https://docs.snowflake.com/en/developer-guide/snowflake-cli/index) installed
+- A configured Snowflake connection (in `~/.snowflake/connections.toml`)
+
+### How it works
+
+The app runs inside Snowflake's warehouse runtime, which uses **conda** (not pip) for dependency management. Key files:
+
+| File | Purpose |
+|---|---|
+| `snowflake.yml` | Defines the Streamlit entity and artifacts. Database, schema, and warehouse are templated via `<% ctx.env.* %>` — values come from `.env` |
+| `.env` | Sets `database`, `schema`, and `warehouse` environment variables (git-ignored) |
+| `environment.yml` | Pins package versions via the [Snowflake Anaconda Channel](https://repo.anaconda.com/pkgs/snowflake/) (conda). This is how you control the Streamlit version in warehouse runtimes |
+| `cortex_code_cost_dashboard.py` | Main app file. Uses `get_active_session()` from `snowflake.snowpark.context` for the Snowflake connection |
+| `.streamlit/config.toml` | Theme configuration |
+
+> **Note:** `pyproject.toml` is for local development only. Warehouse runtimes ignore it — only `environment.yml` is used for dependency resolution.
 
 ### Deploy
 
+Source the `.env` file to export variables, then deploy:
+
 ```bash
-snow streamlit deploy --replace
+set -a && source .env && set +a && snow streamlit deploy --replace
 ```
 
-This reads `snowflake.yml` and deploys to the database/schema defined there. The app will be available in Snowsight under **Streamlit**.
+Or specify a connection explicitly:
+
+```bash
+set -a && source .env && set +a && snow streamlit deploy -c <your-connection-name> --replace
+```
+
+`set -a` auto-exports all sourced variables; `set +a` turns it off. The `<% ctx.env.* %>` templates in `snowflake.yml` resolve from these environment variables.
+
+You can also override individual values at deploy time without editing `.env`:
+
+```bash
+set -a && source .env && set +a && snow streamlit deploy --replace --env database=DEV_DB
+```
+
+### Verify the deployment
+
+After deploying, confirm the app picked up the correct packages:
+
+```sql
+DESCRIBE STREAMLIT <DATABASE>.<SCHEMA>.CORTEX_CODE_USAGE_AND_COST_DASHBOARD;
+```
+
+Check the `user_packages` column — it should show `streamlit==1.52.2,altair,pandas,numpy`.
+
+### Changing the Streamlit version
+
+Edit `environment.yml` and set the version to any [supported warehouse runtime version](https://docs.snowflake.com/en/developer-guide/streamlit/app-development/dependency-management):
+
+```yaml
+name: sf_env
+channels:
+  - snowflake
+dependencies:
+  - streamlit=1.52.2    # pin to a supported version
+  - altair
+  - pandas
+  - numpy
+```
+
+Then redeploy with `snow streamlit deploy --replace`. Only versions available in the Snowflake Anaconda Channel are supported (1.22.0 through 1.52.2 as of this writing).
 
 ---
 
@@ -100,7 +160,7 @@ Use [Cortex Code](https://docs.snowflake.com/en/user-guide/cortex-code/cortex-co
 ### One-shot (non-interactive)
 
 ```bash
-cortex -p "Deploy the Streamlit app defined in snowflake.yml to Snowflake" --connection <your-connection>
+set -a && source .env && set +a && cortex -p "Deploy the Streamlit app defined in snowflake.yml to Snowflake" --connection <your-connection>
 ```
 
 Cortex Code reads `snowflake.yml`, runs `snow streamlit deploy --replace`, and reports the result.
@@ -108,7 +168,7 @@ Cortex Code reads `snowflake.yml`, runs `snow streamlit deploy --replace`, and r
 ### Interactive
 
 ```bash
-cortex --connection <your-connection>
+set -a && source .env && set +a && cortex --connection <your-connection>
 ```
 
 Then type at the prompt:
@@ -167,8 +227,10 @@ streamlit run cortex_code_cost_dashboard.py
 
 1. Open Snowsight → **Streamlit** → **+ Streamlit App**
 2. Upload `cortex_code_cost_dashboard.py` as the main file
-3. Upload `pyproject.toml` and `.streamlit/config.toml` as additional files
+3. Upload `environment.yml` and `.streamlit/config.toml` as additional files
 4. Set the warehouse and click **Run**
+
+> Do **not** upload `pyproject.toml` — warehouse runtimes use `environment.yml` for dependencies.
 
 ---
 
